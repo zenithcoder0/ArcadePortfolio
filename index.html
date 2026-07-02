@@ -3,62 +3,42 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Portfolio Quest - An Interactive Journey</title>
+    <title>Arcade Portfolio - A Pokemon-Style Adventure</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div id="game-container">
-        <canvas id="gameCanvas"></canvas>
-        <div id="ui-overlay">
-            <div id="stats">
-                <div class="stat">
-                    <span class="stat-label">Level:</span>
-                    <span id="current-level">1</span>
-                </div>
-                <div class="stat">
-                    <span class="stat-label">Projects Found:</span>
-                    <span id="projects-collected">0</span>/<span id="total-projects">5</span>
-                </div>
-                <div class="stat">
-                    <span class="stat-label">Time Wasted:</span>
-                    <span id="time-played">0:00</span>
-                </div>
-            </div>
-            <div id="controls-hint">
-                <p>Arrow Keys / WASD to Move | SPACE to Jump | E to Interact</p>
-            </div>
-        </div>
+    <div id="console-shell">
+        <div id="screen-frame">
+            <div id="game-container">
+                <canvas id="gameCanvas" width="720" height="480"></canvas>
 
-        <!-- Portfolio Info Modal -->
-        <div id="info-modal" class="modal hidden">
-            <div class="modal-content">
-                <span class="close-btn">&times;</span>
-                <h2 id="modal-title"></h2>
-                <div id="modal-body"></div>
+                <!-- HUD -->
+                <div id="hud">
+                    <div id="hud-projects">PROJECTS <span id="projects-collected">0</span>/<span id="total-projects">5</span></div>
+                </div>
+
+                <!-- Pokemon-style dialogue box -->
+                <div id="dialogue-box" class="hidden">
+                    <p id="dialogue-text"></p>
+                    <span id="dialogue-arrow" class="hidden">&#9660;</span>
+                </div>
+
+                <!-- Start Screen -->
+                <div id="start-screen">
+                    <h1>ARCADE<br>PORTFOLIO</h1>
+                    <p class="subtitle">A Pokemon-style portfolio adventure</p>
+                    <button id="start-btn" class="pixel-btn">PRESS START</button>
+                    <div class="instructions">
+                        <p><span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span> MOVE &nbsp;&nbsp; <span class="key">E</span> INTERACT</p>
+                        <p class="fine-print">Talk to the townsfolk. Read the signs.<br>Wild PROJECTS lurk in the tall grass...</p>
+                    </div>
+                </div>
             </div>
         </div>
-
-        <!-- Start Screen -->
-        <div id="start-screen">
-            <h1 class="glitch" data-text="Portfolio Quest">Portfolio Quest</h1>
-            <p class="subtitle">A recruiter's worst nightmare</p>
-            <button id="start-btn" class="pixel-btn">Start Wasting Time</button>
-            <div class="instructions">
-                <h3>Your Mission:</h3>
-                <p>Navigate through my portfolio world, collect project stars,<br>
-                and discover my skills hidden throughout the levels.<br><br>
-                Warning: This game is designed to be distractingly fun.</p>
-            </div>
-        </div>
-
-        <!-- Game Over / Victory Screen -->
-        <div id="end-screen" class="hidden">
-            <h2 id="end-title"></h2>
-            <p id="end-message"></p>
-            <div id="end-stats"></div>
-            <button id="restart-btn" class="pixel-btn">Play Again</button>
-            <button id="contact-btn" class="pixel-btn">Actually Hire Me</button>
-        </div>
+        <div id="controls-hint">WASD to move &middot; E to interact</div>
     </div>
 
     <script src="game.js"></script>
