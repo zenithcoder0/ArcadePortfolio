@@ -190,16 +190,23 @@ const DIRS = {
 
 const hudEl = document.getElementById('hud');
 
+// DOM lookups are null-safe so a stale cached index.html (missing newer
+// elements) can never crash the game into a blank screen.
+function setText(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+}
+
 // The HUD belongs to the overworld; battle and cutscene draw their own UI
 function setHudVisible(visible) {
-    hudEl.style.display = visible ? 'flex' : 'none';
+    if (hudEl) hudEl.style.display = visible ? 'flex' : 'none';
 }
 
 function updateHud() {
-    document.getElementById('notes-collected').textContent = state.notesFound;
-    document.getElementById('total-notes').textContent = NOTES.length;
-    document.getElementById('hp-current').textContent = state.hp;
-    document.getElementById('hp-max').textContent = PLAYER_MAX_HP;
+    setText('notes-collected', state.notesFound);
+    setText('total-notes', NOTES.length);
+    setText('hp-current', state.hp);
+    setText('hp-max', PLAYER_MAX_HP);
 }
 
 // ---------- Input ----------
@@ -443,7 +450,7 @@ function startBattle() {
 function showBattleMenu() {
     battle.menuVisible = true;
     battle.menuIndex = 0;
-    battleMenuEl.classList.remove('hidden');
+    if (battleMenuEl) battleMenuEl.classList.remove('hidden');
     renderBattleMenu();
     // Static prompt in the dialogue box while the menu is up
     dialogueBox.classList.remove('hidden');
@@ -453,13 +460,14 @@ function showBattleMenu() {
 
 function hideBattleMenu() {
     battle.menuVisible = false;
-    battleMenuEl.classList.add('hidden');
+    if (battleMenuEl) battleMenuEl.classList.add('hidden');
     dialogueBox.classList.add('hidden');
 }
 
 function renderBattleMenu() {
     for (let i = 0; i < 4; i++) {
-        document.getElementById('bm-' + i).classList.toggle('selected', i === battle.menuIndex);
+        const el = document.getElementById('bm-' + i);
+        if (el) el.classList.toggle('selected', i === battle.menuIndex);
     }
 }
 
@@ -1208,26 +1216,40 @@ function renderCutscene() {
 }
 
 // ---------- Game loop ----------
+// The world renders even before PRESS START (behind the start screen), and a
+// per-frame exception is logged without killing the loop — the canvas must
+// never be left as a blank green rectangle.
+let loopErrorLogged = false;
+
 function gameLoop() {
-    if (state.running) {
+    try {
         state.frame++;
-        if (mode === 'world') updatePlayer();
-        if (mode === 'cutscene') updateCutscene();
-        updateDialogue();
+        if (state.running) {
+            if (mode === 'world') updatePlayer();
+            if (mode === 'cutscene') updateCutscene();
+            updateDialogue();
+        }
         if (mode === 'battle') renderBattle();
         else if (mode === 'cutscene') renderCutscene();
         else render();
+    } catch (err) {
+        if (!loopErrorLogged) {
+            loopErrorLogged = true;
+            console.error('Arcade Portfolio game loop error:', err);
+        }
     }
     requestAnimationFrame(gameLoop);
 }
 
 function startGame() {
     if (state.running) return;
-    document.getElementById('start-screen').style.display = 'none';
-    updateHud();
     state.running = true;
+    const startScreen = document.getElementById('start-screen');
+    if (startScreen) startScreen.style.display = 'none';
+    updateHud();
 }
 
-document.getElementById('start-btn').addEventListener('click', startGame);
+const startBtn = document.getElementById('start-btn');
+if (startBtn) startBtn.addEventListener('click', startGame);
 
 gameLoop();

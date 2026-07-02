@@ -55,9 +55,19 @@ body {
 
 #game-container {
     position: relative;
-    width: min(720px, 100%);
-    aspect-ratio: 3 / 2;
+    width: 720px;
+    height: 480px;
+    max-width: 100%;
     overflow: hidden;
+}
+
+/* modern browsers: scale fluidly at a locked 3:2 */
+@supports (aspect-ratio: 3 / 2) {
+    #game-container {
+        width: min(720px, 100%);
+        height: auto;
+        aspect-ratio: 3 / 2;
+    }
 }
 
 #gameCanvas {
