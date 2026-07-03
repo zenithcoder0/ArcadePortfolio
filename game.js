@@ -1,8 +1,9 @@
 // ============================================================
 // ARCADE PORTFOLIO — a Pokemon-style top-down portfolio world
 // Grid-based movement (WASD), single interact key (E),
-// collectible NOTES on the ground, wild BOT battles in the
-// tall grass, and a note turn-in cutscene at the INBOX basket.
+// collectible NOTES on the ground, real-time Zelda-style
+// combat vs roaming BOTS (A punches, hold B to block), and a
+// note turn-in cutscene at the INBOX basket.
 // ============================================================
 
 // ---------- Configuration ----------
@@ -11,8 +12,16 @@ const VIEW_COLS = 15;            // viewport width in tiles  (720px)
 const VIEW_ROWS = 10;            // viewport height in tiles (480px)
 const WALK_SPEED = 4;            // px per frame (48/4 = 12 frames per tile)
 const TURN_DELAY = 6;            // frames of "tap to turn" before walking
-const ENCOUNTER_CHANCE = 0.22;   // wild BOT chance per tall-grass step
 const PLAYER_MAX_HP = 20;
+
+const BOT_MAX_HP = 3;            // punches needed to down a BOT
+const AGGRO_RANGE = 5;           // manhattan tiles before a BOT gives chase
+const BOT_CHASE_SPEED = 3;       // px per frame while chasing (48/3 = 16)
+const BOT_WANDER_SPEED = 2;      // px per frame while idle   (48/2 = 24)
+const BOT_KNOCK_SPEED = 6;       // px per frame when punched (48/6 = 8)
+const BOT_RESPAWN_FRAMES = 900;  // ~15s until a downed BOT reboots
+const PUNCH_FRAMES = 12;         // punch animation / cooldown
+const INVULN_FRAMES = 55;        // player i-frames after taking a hit
 
 // ---------- Canvas ----------
 const canvas = document.getElementById('gameCanvas');
@@ -83,7 +92,7 @@ const DIALOGUES = {
         'WELCOME TO PORTFOLIO TOWN!',
         'Five NOTES about my projects blew away and are scattered on the ground.',
         'Collect them all and drop them in the INBOX basket by the DEV LAB, up north.',
-        'CAUTION: wild BOTS roam the tall grass. They bite (off more than they can chew).'
+        'CAUTION: wild BOTS roam the fields and WILL come at you. PUNCH (A) or BLOCK (B)!'
     ],
     skillsSign: [
         'DEV LAB — TECHNICAL SKILLS',
@@ -106,9 +115,6 @@ const DIALOGUES = {
         'You splash cool pond water on your face.',
         'HP fully restored!'
     ],
-    tallGrass: [
-        'The grass rustles with a faint whirring sound. Wild BOTS live here!'
-    ],
     allNotes: [
         'That was the last NOTE!',
         'Take all 5 to the INBOX basket next to the DEV LAB.'
@@ -116,6 +122,10 @@ const DIALOGUES = {
     basketDone: [
         'The robot is busy filing. The TODO pile teeters ominously overhead.',
         'Get in touch before it reaches the stratosphere — FISHER FINN has the contact info.'
+    ],
+    defeated: [
+        'The BOTS debugged YOU for a change!',
+        'You wake up back at the town square, fully patched and mildly embarrassed.'
     ]
 };
 
@@ -134,8 +144,8 @@ const NPCS = [
         palette: { hat: '#2b50aa', shirt: '#2b50aa', pants: '#333344' },
         pages: [
             'RECRUITER ROY: Hey! You look like you can read a resume!',
-            'Watch the tall grass — wild BOTS in there challenge everyone to battle. Rude little things.',
-            'DEBUG them into submission, or RUN. I always run. It is called sourcing.'
+            'Watch yourself out there — wild BOTS charge right at you these days. Rude little things.',
+            'PUNCH them with A before they strike, or hold B and face them to BLOCK. Blocking a hit leaves them dizzy!'
         ]
     },
     {
@@ -152,13 +162,13 @@ const NPCS = [
         palette: { hat: '#b8b8c8', shirt: '#a85ca8', pants: '#6a5a7a' },
         pages: [
             'GRANDMA MAY: These flowers? Grown with CSS and patience, dear.',
-            'A BOT once challenged me to battle. I gave it a cookie. Third-party, of course. It left.'
+            'A BOT charged me once. I blocked it with my handbag and it sat down dizzy for a week.'
         ]
     }
 ];
 
 // ---------- Game state ----------
-// mode: 'world' | 'battle' | 'cutscene'
+// mode: 'world' | 'cutscene'
 let mode = 'world';
 
 const state = {
@@ -178,6 +188,9 @@ const player = {
     moving: false,
     moveDir: null,
     turnTimer: 0,
+    punchTimer: 0,   // frames left in the punch animation (also the cooldown)
+    blocking: false, // true while B (KeyX) is held
+    invuln: 0,       // i-frames after taking a hit
     palette: { hat: '#d83030', shirt: '#3050c8', pants: '#404060' }
 };
 
@@ -188,6 +201,15 @@ const DIRS = {
     right: { dx: 1, dy: 0 }
 };
 
+const OPPOSITE = { up: 'down', down: 'up', left: 'right', right: 'left' };
+
+function vecToDir(dx, dy) {
+    if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'right' : 'left';
+    return dy >= 0 ? 'down' : 'up';
+}
+
+const rand = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
+
 const hudEl = document.getElementById('hud');
 
 // DOM lookups are null-safe so a stale cached index.html (missing newer
@@ -197,7 +219,7 @@ function setText(id, value) {
     if (el) el.textContent = value;
 }
 
-// The HUD belongs to the overworld; battle and cutscene draw their own UI
+// The HUD belongs to the overworld; the cutscene draws its own UI
 function setHudVisible(visible) {
     if (hudEl) hudEl.style.display = visible ? 'flex' : 'none';
 }
@@ -225,23 +247,12 @@ window.addEventListener('keydown', (e) => {
         if (e.code === 'Enter' || e.code === 'Space' || e.code === 'KeyE') startGame();
         return;
     }
-    // In the battle menu, direction keys move the cursor instead of the player
-    if (battle.menuVisible && KEY_TO_DIR[e.code]) {
-        moveBattleCursor(KEY_TO_DIR[e.code]);
-        return;
-    }
-    // Single interact function, mapped to E (plus Space/Enter as aliases).
-    // B (KeyX) is the Game Boy B button: RUN shortcut in battle, interact otherwise.
+    // The A button: single interact function, mapped to E (Space/Enter alias).
+    // Context-sensitive like Zelda — talks/reads when facing something,
+    // punches otherwise. The B button (KeyX) is the held block, polled
+    // per-frame in updatePlayer rather than handled as a press.
     if (e.code === 'KeyE' || e.code === 'Space' || e.code === 'Enter') {
         interact();
-    } else if (e.code === 'KeyX') {
-        if (battle.menuVisible) {
-            battle.menuIndex = 3; // RUN
-            renderBattleMenu();
-            interact();
-        } else {
-            interact();
-        }
     }
 });
 
@@ -255,7 +266,8 @@ function heldDirection() {
 }
 
 // On-screen Game Boy controller: buttons replay the exact same key events,
-// so touch input flows through the same single interact() path.
+// so touch input flows through the same handlers (A taps punch/talk, holding
+// B blocks — pointerdown/up map to keydown/up).
 document.querySelectorAll('#touch-controls [data-key]').forEach((btn) => {
     const code = btn.dataset.key;
     const press = (e) => {
@@ -341,12 +353,9 @@ function advanceDialogue() {
 }
 
 // ---------- The single interact function ----------
-// Every A-button press lands here, whatever the game mode.
+// Every A-button press lands here, whatever the game mode. In the world it
+// is context-sensitive: talk/read when facing something, punch otherwise.
 function interact() {
-    if (battle.menuVisible) {
-        chooseBattleOption();
-        return;
-    }
     if (dialogue.open) {
         advanceDialogue();
         return;
@@ -355,16 +364,22 @@ function interact() {
         skipCutscene();
         return;
     }
-    if (mode !== 'world' || player.moving) return;
+    if (mode !== 'world' || player.moving || player.punchTimer > 0) return;
 
     const dir = DIRS[player.facing];
     const col = player.col + dir.dx;
     const row = player.row + dir.dy;
 
+    // A BOT in front takes priority — swing first, read signs later
+    if (botAt(col, row)) {
+        punch();
+        return;
+    }
+
     // NPCs turn to face you when spoken to
     const npc = NPCS.find(n => n.col === col && n.row === row);
     if (npc) {
-        npc.facing = { up: 'down', down: 'up', left: 'right', right: 'left' }[player.facing];
+        npc.facing = OPPOSITE[player.facing];
         openDialogue(npc.pages);
         return;
     }
@@ -376,10 +391,10 @@ function interact() {
         openDialogue(DIALOGUES.labDoor);
     } else if (tile === 'W') {
         openDialogue(DIALOGUES.water, () => { state.hp = PLAYER_MAX_HP; updateHud(); });
-    } else if (tile === 't') {
-        openDialogue(DIALOGUES.tallGrass);
     } else if (tile === 'B') {
         interactBasket();
+    } else {
+        punch(); // nothing to talk to — the A button throws hands
     }
 }
 
@@ -423,134 +438,249 @@ function interactBasket() {
     }
 }
 
-// ---------- Battle system (turn-based RPG vs wild BOT) ----------
-const battle = {
-    menuVisible: false,
-    menuIndex: 0,
-    enemyHP: 0,
-    enemyMax: 14,
-    coffees: 0,
-    shake: 0
-};
-
-const BOT_ATTACKS = ['NULL POINTER', 'MERGE CONFLICT', 'INFINITE LOOP', 'SPAM PING'];
-
-const battleMenuEl = document.getElementById('battle-menu');
-
-function startBattle() {
-    mode = 'battle';
-    setHudVisible(false);
-    battle.enemyHP = battle.enemyMax;
-    battle.coffees = 3;
-    battle.menuIndex = 0;
-    battle.shake = 0;
-    openDialogue(['A wild BOT appeared!', 'It beeps menacingly.'], showBattleMenu);
+// ---------- Enemies: wild BOTS (Zelda-style real-time) ----------
+// State machine per BOT: idle/wander -> chase (player in AGGRO_RANGE) ->
+// windup (telegraphed lunge when adjacent) -> strike. Punches knock them
+// back; a blocked strike leaves them staggered; at 0 HP they power down
+// and reboot at home a while later.
+function makeBot(home) {
+    return {
+        home,
+        col: home.col, row: home.row,
+        x: home.col * TILE, y: home.row * TILE,
+        facing: 'down',
+        moving: false, moveDir: 'down', speed: BOT_WANDER_SPEED,
+        hp: BOT_MAX_HP,
+        state: 'idle',       // idle | windup | stagger | dead
+        timer: 0,
+        cooldown: 0,         // frames until it may attack again
+        wanderTimer: rand(40, 120),
+        flash: 0,            // hurt flash frames
+        respawnTimer: 0
+    };
 }
 
-function showBattleMenu() {
-    battle.menuVisible = true;
-    battle.menuIndex = 0;
-    if (battleMenuEl) battleMenuEl.classList.remove('hidden');
-    renderBattleMenu();
-    // Static prompt in the dialogue box while the menu is up
-    dialogueBox.classList.remove('hidden');
-    dialogueArrow.classList.add('hidden');
-    dialogueText.textContent = 'What will DEV do?';
+const BOTS = [
+    { col: 20, row: 3 },   // NE tall grass
+    { col: 21, row: 4 },   // NE tall grass
+    { col: 9,  row: 10 },  // west fields
+    { col: 4,  row: 15 },  // south tall grass
+    { col: 24, row: 14 }   // east of the pond
+].map(makeBot);
+
+function botAt(col, row) {
+    return BOTS.find(b => b.state !== 'dead' && b.col === col && b.row === row) || null;
 }
 
-function hideBattleMenu() {
-    battle.menuVisible = false;
-    if (battleMenuEl) battleMenuEl.classList.add('hidden');
-    dialogueBox.classList.add('hidden');
+function botTryStep(bot, dir, speed) {
+    bot.facing = dir;
+    const d = DIRS[dir];
+    const c = bot.col + d.dx;
+    const r = bot.row + d.dy;
+    if (!isWalkable(c, r)) return false;
+    if (c === player.col && r === player.row) return false;
+    if (BOTS.some(o => o !== bot && o.state !== 'dead' && o.col === c && o.row === r)) return false;
+    bot.col = c;
+    bot.row = r;
+    bot.moveDir = dir;
+    bot.moving = true;
+    bot.speed = speed;
+    return true;
 }
 
-function renderBattleMenu() {
-    for (let i = 0; i < 4; i++) {
-        const el = document.getElementById('bm-' + i);
-        if (el) el.classList.toggle('selected', i === battle.menuIndex);
+function updateBot(bot) {
+    if (bot.flash > 0) bot.flash--;
+    if (bot.cooldown > 0) bot.cooldown--;
+
+    if (bot.state === 'dead') {
+        if (--bot.respawnTimer <= 0 && isWalkable(bot.home.col, bot.home.row) &&
+            !(bot.home.col === player.col && bot.home.row === player.row) &&
+            !botAt(bot.home.col, bot.home.row)) {
+            Object.assign(bot, makeBot(bot.home));
+        }
+        return;
     }
-}
 
-function moveBattleCursor(dir) {
-    // 2x2 grid: 0 DEBUG, 1 REFACTOR, 2 COFFEE, 3 RUN
-    if (dir === 'left' || dir === 'right') battle.menuIndex ^= 1;
-    if (dir === 'up' || dir === 'down') battle.menuIndex ^= 2;
-    renderBattleMenu();
-}
+    if (bot.state === 'stagger') {
+        if (--bot.timer <= 0) bot.state = 'idle';
+        return;
+    }
 
-const rand = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
-
-function chooseBattleOption() {
-    const choice = battle.menuIndex;
-    hideBattleMenu();
-    const msgs = [];
-
-    if (choice === 0) { // DEBUG — reliable damage
-        const dmg = rand(3, 6);
-        battle.enemyHP = Math.max(0, battle.enemyHP - dmg);
-        battle.shake = 12;
-        msgs.push('DEV used DEBUG!', `The BOT took ${dmg} damage!`);
-    } else if (choice === 1) { // REFACTOR — risky, big damage or nothing
-        if (Math.random() < 0.5) {
-            const dmg = rand(7, 10);
-            battle.enemyHP = Math.max(0, battle.enemyHP - dmg);
-            battle.shake = 18;
-            msgs.push('DEV used REFACTOR!', `Clean code! Critical hit! ${dmg} damage!`);
-        } else {
-            msgs.push('DEV used REFACTOR!', 'The build broke! It failed!');
+    if (bot.state === 'windup') {
+        if (--bot.timer <= 0) {
+            resolveBotStrike(bot);
+            bot.cooldown = 70;
+            if (bot.state === 'windup') bot.state = 'idle';
         }
-    } else if (choice === 2) { // COFFEE — heal, limited uses
-        if (battle.coffees > 0) {
-            battle.coffees--;
-            const heal = Math.min(rand(6, 9), PLAYER_MAX_HP - state.hp);
-            state.hp += heal;
-            updateHud();
-            msgs.push('DEV drank COFFEE!', heal > 0 ? `Restored ${heal} HP! (${battle.coffees} left)` : 'HP is already full. The jitters set in.');
-        } else {
-            msgs.push('Out of COFFEE!', 'The horror. The horror.');
+        return;
+    }
+
+    // finish the current tween first
+    if (bot.moving) {
+        const d = DIRS[bot.moveDir];
+        bot.x += d.dx * bot.speed;
+        bot.y += d.dy * bot.speed;
+        if (bot.x === bot.col * TILE && bot.y === bot.row * TILE) bot.moving = false;
+        return;
+    }
+
+    const dx = player.col - bot.col;
+    const dy = player.row - bot.row;
+    const dist = Math.abs(dx) + Math.abs(dy);
+
+    // adjacent: square up and telegraph a strike
+    if (dist === 1) {
+        bot.facing = vecToDir(dx, dy);
+        if (bot.cooldown <= 0) {
+            bot.state = 'windup';
+            bot.timer = 24;
         }
-    } else { // RUN
-        if (Math.random() < 0.6) {
-            openDialogue(['Got away safely!'], () => endBattle(null));
+        return;
+    }
+
+    // in range: chase, preferring the longer axis
+    if (dist <= AGGRO_RANGE) {
+        const horiz = dx > 0 ? 'right' : 'left';
+        const vert = dy > 0 ? 'down' : 'up';
+        const primary = Math.abs(dx) >= Math.abs(dy) ? horiz : vert;
+        const secondary = Math.abs(dx) >= Math.abs(dy)
+            ? (dy !== 0 ? vert : null)
+            : (dx !== 0 ? horiz : null);
+        if (!botTryStep(bot, primary, BOT_CHASE_SPEED) && secondary) {
+            botTryStep(bot, secondary, BOT_CHASE_SPEED);
+        }
+        return;
+    }
+
+    // calm: wander, drifting back toward home
+    if (--bot.wanderTimer <= 0) {
+        bot.wanderTimer = rand(60, 150);
+        const homeDx = bot.home.col - bot.col;
+        const homeDy = bot.home.row - bot.row;
+        if (Math.abs(homeDx) + Math.abs(homeDy) > 3) {
+            botTryStep(bot, vecToDir(homeDx, homeDy), BOT_WANDER_SPEED);
             return;
         }
-        msgs.push('You tried to RUN!', 'The BOT blocks the way, citing a mandatory sync.');
-    }
-
-    if (battle.enemyHP <= 0) {
-        msgs.push('The wild BOT powered down!', 'You gained 64 EXP. (EXP does nothing.)');
-        openDialogue(msgs, () => endBattle('win'));
-    } else {
-        openDialogue(msgs, enemyTurn);
+        const dir = ['up', 'down', 'left', 'right'][rand(0, 3)];
+        const d = DIRS[dir];
+        const nearHome = Math.abs(bot.col + d.dx - bot.home.col) + Math.abs(bot.row + d.dy - bot.home.row) <= 3;
+        if (nearHome) botTryStep(bot, dir, BOT_WANDER_SPEED);
+        else bot.facing = dir;
     }
 }
 
-function enemyTurn() {
-    const attack = BOT_ATTACKS[rand(0, BOT_ATTACKS.length - 1)];
-    const dmg = rand(2, 4);
+function resolveBotStrike(bot) {
+    const dx = player.col - bot.col;
+    const dy = player.row - bot.row;
+    if (Math.abs(dx) + Math.abs(dy) !== 1) return; // player slipped away — whiff
+
+    const dirToBot = vecToDir(-dx, -dy); // from the player toward the bot
+    const midX = (player.x + bot.x) / 2 + TILE / 2;
+    const midY = (player.y + bot.y) / 2 + TILE / 2;
+
+    if (player.blocking && player.facing === dirToBot) {
+        // Blocked! The BOT bounces off, dizzy.
+        addEffect('clank', midX, midY);
+        bot.state = 'stagger';
+        bot.timer = 55;
+    } else {
+        addEffect('hit', midX, midY);
+        damagePlayer(rand(2, 3));
+    }
+}
+
+// ---------- Combat: punch & damage ----------
+function punch() {
+    player.punchTimer = PUNCH_FRAMES;
+    const dir = DIRS[player.facing];
+    const col = player.col + dir.dx;
+    const row = player.row + dir.dy;
+    const bot = botAt(col, row);
+    if (!bot) return; // swung at air — very cardio
+
+    bot.hp--;
+    bot.flash = 10;
+    addEffect('hit', col * TILE + TILE / 2, row * TILE + TILE / 2);
+
+    if (bot.hp <= 0) {
+        bot.state = 'dead';
+        bot.moving = false;
+        bot.respawnTimer = BOT_RESPAWN_FRAMES;
+        addEffect('poof', col * TILE + TILE / 2, row * TILE + TILE / 2);
+        return;
+    }
+
+    // survivors get knocked back a tile (if there is room) and briefly reel
+    bot.state = 'idle';
+    bot.timer = 0;
+    bot.cooldown = Math.max(bot.cooldown, 40);
+    const kc = col + dir.dx;
+    const kr = row + dir.dy;
+    if (isWalkable(kc, kr) && !(kc === player.col && kr === player.row) && !botAt(kc, kr)) {
+        bot.col = kc;
+        bot.row = kr;
+        bot.moveDir = player.facing;
+        bot.moving = true;
+        bot.speed = BOT_KNOCK_SPEED;
+    }
+    bot.facing = OPPOSITE[player.facing]; // it still glares at you
+}
+
+function damagePlayer(dmg) {
+    if (player.invuln > 0 || mode !== 'world') return;
     state.hp = Math.max(0, state.hp - dmg);
+    player.invuln = INVULN_FRAMES;
     updateHud();
-    const msgs = [`The wild BOT used ${attack}!`, `You took ${dmg} damage!`];
     if (state.hp <= 0) {
-        msgs.push('You ran out of energy!', 'You wake up back in town. The BOT filed a bug report about you.');
-        openDialogue(msgs, () => endBattle('loss'));
-    } else {
-        openDialogue(msgs, showBattleMenu);
+        openDialogue(DIALOGUES.defeated, () => {
+            state.hp = PLAYER_MAX_HP;
+            player.col = SPAWN.col;
+            player.row = SPAWN.row;
+            player.x = SPAWN.col * TILE;
+            player.y = SPAWN.row * TILE;
+            player.moving = false;
+            player.invuln = INVULN_FRAMES;
+            updateHud();
+        });
     }
 }
 
-function endBattle(result) {
-    hideBattleMenu();
-    mode = 'world';
-    setHudVisible(true);
-    if (result === 'loss') {
-        state.hp = PLAYER_MAX_HP;
-        player.col = SPAWN.col;
-        player.row = SPAWN.row;
-        player.x = SPAWN.col * TILE;
-        player.y = SPAWN.row * TILE;
-        player.moving = false;
-        updateHud();
+// ---------- Hit effects (sparks, clanks, poofs) ----------
+const effects = [];
+
+function addEffect(type, x, y) {
+    effects.push({ type, x, y, timer: type === 'poof' ? 24 : 14, max: type === 'poof' ? 24 : 14 });
+}
+
+function drawEffects(camX, camY) {
+    for (let i = effects.length - 1; i >= 0; i--) {
+        const fx = effects[i];
+        const x = fx.x - camX;
+        const y = fx.y - camY;
+        const p = 1 - fx.timer / fx.max; // 0 -> 1 over the effect's life
+        if (fx.type === 'hit') {
+            const r = 4 + p * 14;
+            ctx.fillStyle = '#f5d442';
+            ctx.fillRect(x - r, y - 2, r * 2, 4);
+            ctx.fillRect(x - 2, y - r, 4, r * 2);
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(x - 4, y - 4, 8, 8);
+        } else if (fx.type === 'clank') {
+            const r = 6 + p * 12;
+            ctx.strokeStyle = '#9ad0ff';
+            ctx.lineWidth = 3;
+            ctx.strokeRect(x - r, y - r, r * 2, r * 2);
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(x - 3, y - 3, 6, 6);
+        } else if (fx.type === 'poof') {
+            const r = 4 + p * 10;
+            ctx.fillStyle = `rgba(180, 180, 190, ${1 - p})`;
+            ctx.fillRect(x - r - 8, y - r, r, r);
+            ctx.fillRect(x + 8, y - r, r, r);
+            ctx.fillRect(x - r / 2, y - r - 8, r, r);
+            ctx.fillRect(x - r / 2, y + 6, r, r);
+        }
+        if (--fx.timer <= 0) effects.splice(i, 1);
     }
 }
 
@@ -562,7 +692,8 @@ function isWalkable(col, row) {
 }
 
 function updatePlayer() {
-    if (dialogue.open) return;
+    if (player.invuln > 0) player.invuln--;
+    if (dialogue.open) { player.blocking = false; return; }
 
     if (player.moving) {
         const dir = DIRS[player.moveDir];
@@ -577,6 +708,12 @@ function updatePlayer() {
         return;
     }
 
+    if (player.punchTimer > 0) { player.punchTimer--; return; }
+
+    // Hold B to raise your guard: locks facing and position, Zelda-style
+    player.blocking = !!keys['KeyX'];
+    if (player.blocking) { player.turnTimer = 0; return; }
+
     const dir = heldDirection();
     if (!dir) { player.turnTimer = 0; return; }
 
@@ -589,22 +726,18 @@ function updatePlayer() {
     if (player.turnTimer > 0) { player.turnTimer--; return; }
 
     const d = DIRS[dir];
-    if (isWalkable(player.col + d.dx, player.row + d.dy)) {
-        player.col += d.dx;
-        player.row += d.dy;
+    const nc = player.col + d.dx;
+    const nr = player.row + d.dy;
+    if (isWalkable(nc, nr) && !botAt(nc, nr)) {
+        player.col = nc;
+        player.row = nr;
         player.moveDir = dir;
         player.moving = true;
     }
 }
 
 function onTileEntered() {
-    // Notes on the ground take priority over anything else
-    if (collectNoteAt(player.col, player.row)) return;
-
-    // Wild BOT encounters in the tall grass
-    if (tileAt(player.col, player.row) !== 't') return;
-    if (Math.random() > ENCOUNTER_CHANCE) return;
-    startBattle();
+    collectNoteAt(player.col, player.row);
 }
 
 // ---------- Cutscene: the robot and the comically large TODO pile ----------
@@ -883,9 +1016,74 @@ function drawNote(x, y, t) {
     }
 }
 
+// The roaming BOT enemy, pixel style, one tile big.
+function drawBot(bot, sx, sy, t) {
+    const s = 3;
+    const hover = bot.state === 'dead' ? 0 : (Math.floor(t / 20 + bot.col * 3) % 2 === 0 ? 0 : 2);
+    let jx = 0;
+    let jy = 0;
+    if (bot.state === 'windup') {
+        // telegraph: rattle in place, then lean into the lunge
+        const shake = bot.timer % 4 < 2 ? 1 : -1;
+        const lunge = bot.timer < 8 ? 8 : 0;
+        const d = DIRS[bot.facing];
+        jx = shake + d.dx * lunge;
+        jy = d.dy * lunge;
+    }
+    const white = bot.flash > 0 && bot.flash % 4 >= 2;
+    const C = (c) => (white ? '#ffffff' : c);
+    const r = (cx, cy, w, h, color) => {
+        ctx.fillStyle = C(color);
+        ctx.fillRect(sx + jx + cx * s, sy + jy + hover + cy * s, w * s, h * s);
+    };
+
+    // shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.18)';
+    ctx.fillRect(sx + 8, sy + TILE - 8, TILE - 16, 6);
+
+    // antenna
+    r(7, -2, 1, 2, '#707888');
+    r(6, -3, 3, 1, bot.state === 'windup' ? '#ff2020' : (Math.floor(t / 15) % 2 === 0 ? '#e84545' : '#f5d442'));
+    // head with a visor eye that looks where it walks
+    r(4, 0, 8, 5, '#aab2c4');
+    r(5, 1, 6, 3, '#38405a');
+    const eyeCol = bot.state === 'windup' ? '#ff2020' : '#ff5050';
+    if (bot.facing === 'left') r(5, 2, 2, 1, eyeCol);
+    else if (bot.facing === 'right') r(9, 2, 2, 1, eyeCol);
+    else if (bot.facing === 'up') r(7, 1, 2, 1, eyeCol);
+    else { r(6, 2, 1, 1, eyeCol); r(9, 2, 1, 1, eyeCol); }
+    // body
+    r(3, 5, 10, 6, '#8a94aa');
+    r(5, 6, 6, 3, '#38405a');
+    r(6, 7, 4, 1, bot.state === 'stagger' ? '#f5d442' : '#5cf05c');
+    // arms
+    r(1, 6, 2, 4, '#707888');
+    r(13, 6, 2, 4, '#707888');
+    // treads
+    r(4, 11, 8, 2, '#38405a');
+    r(3, 13, 10, 1, '#20263a');
+
+    // dizzy stars while staggered
+    if (bot.state === 'stagger') {
+        const a = t / 6;
+        ctx.fillStyle = '#f5d442';
+        ctx.fillRect(sx + 24 + Math.cos(a) * 14, sy - 8 + Math.sin(a) * 4, 4, 4);
+        ctx.fillRect(sx + 24 - Math.cos(a) * 14, sy - 8 - Math.sin(a) * 4, 4, 4);
+    }
+
+    // damage pips once it has been hit
+    if (bot.hp < BOT_MAX_HP) {
+        for (let i = 0; i < BOT_MAX_HP; i++) {
+            ctx.fillStyle = i < bot.hp ? '#5cb85c' : '#38405a';
+            ctx.fillRect(sx + 12 + i * 9, sy - 14, 7, 4);
+        }
+    }
+}
+
 // Pixel-art character, drawn with rects. facing: up/down/left/right.
 // walkFrame 0 = standing, 1/2 = alternating steps.
-function drawCharacter(px, py, facing, walkFrame, palette) {
+// opts: { punch: frames-left, blocking: bool }
+function drawCharacter(px, py, facing, walkFrame, palette, opts = {}) {
     const s = 3; // pixel scale (16x16 logical sprite in a 48px tile)
     const ox = px;
     const oy = py - 4 * s;
@@ -930,6 +1128,25 @@ function drawCharacter(px, py, facing, walkFrame, palette) {
         r(12, 4 - bob, 2, 3, palette.hat);
         r(10, 6 - bob, 2, 2, '#222');
     }
+
+    // raised guard: a gray forearm shield on the facing side
+    if (opts.blocking) {
+        const guard = '#8a94aa';
+        const edge = '#38405a';
+        if (facing === 'down') { r(3, 14, 10, 3, guard); r(3, 16, 10, 1, edge); }
+        else if (facing === 'up') { r(3, 0, 10, 3, guard); r(3, 0, 10, 1, edge); }
+        else if (facing === 'left') { r(0, 5, 3, 10, guard); r(0, 5, 1, 10, edge); }
+        else { r(13, 5, 3, 10, guard); r(15, 5, 1, 10, edge); }
+    }
+
+    // punch: a fist shoots out in the facing direction
+    if (opts.punch > 0) {
+        const ext = opts.punch > PUNCH_FRAMES / 2 ? 3 : 1; // out fast, back slow
+        if (facing === 'down') r(6, 15 + ext, 3, 3, skin);
+        else if (facing === 'up') r(7, 1 - ext, 3, 3, skin);
+        else if (facing === 'left') r(1 - ext, 11, 3, 3, skin);
+        else r(12 + ext, 11, 3, 3, skin);
+    }
 }
 
 function render() {
@@ -960,113 +1177,30 @@ function render() {
         drawCharacter(npc.col * TILE - cam.x, npc.row * TILE - cam.y, npc.facing, frame, npc.palette);
     }
 
-    // Player
-    const walkFrame = player.moving ? (Math.floor(player.x / 12 + player.y / 12) % 2) + 1 : 0;
-    drawCharacter(player.x - cam.x, player.y - cam.y, player.facing, walkFrame, player.palette);
+    // Roaming BOTS
+    for (const bot of BOTS) {
+        if (bot.state === 'dead') continue;
+        drawBot(bot, bot.x - cam.x, bot.y - cam.y, state.frame);
+        if (tileAt(bot.col, bot.row) === 't' && !bot.moving) {
+            drawTallGrass(bot.col * TILE - cam.x, bot.row * TILE - cam.y, state.frame);
+        }
+    }
+
+    // Player (blinks during i-frames)
+    if (!(player.invuln > 0 && Math.floor(state.frame / 4) % 2 === 0)) {
+        const walkFrame = player.moving ? (Math.floor(player.x / 12 + player.y / 12) % 2) + 1 : 0;
+        drawCharacter(player.x - cam.x, player.y - cam.y, player.facing, walkFrame, player.palette, {
+            punch: player.punchTimer,
+            blocking: player.blocking
+        });
+    }
 
     // Tall grass hides the player's legs, like the real thing
     if (tileAt(player.col, player.row) === 't' && !player.moving) {
         drawTallGrass(player.col * TILE - cam.x, player.row * TILE - cam.y, state.frame);
     }
-}
 
-// ---------- Rendering: battle ----------
-// The wild BOT itself, pixel style. scale ~4px per pixel.
-function drawBot(x, y, t, shake) {
-    const s = 4;
-    const hover = Math.floor(t / 20) % 2 === 0 ? 0 : s;
-    const jitter = shake > 0 ? (shake % 2 === 0 ? -s : s) : 0;
-    const r = (cx, cy, w, h, color) => {
-        ctx.fillStyle = color;
-        ctx.fillRect(x + jitter + cx * s, y + hover + cy * s, w * s, h * s);
-    };
-    // antenna
-    r(7, 0, 1, 2, '#707888');
-    r(6, -1, 3, 1, Math.floor(t / 15) % 2 === 0 ? '#e84545' : '#f5d442');
-    // head
-    r(4, 2, 8, 5, '#aab2c4');
-    r(5, 3, 6, 3, '#38405a');
-    r(6, 4, 1, 1, '#ff5050');   // left eye
-    r(9, 4, 1, 1, '#ff5050');   // right eye
-    // body
-    r(3, 7, 10, 6, '#8a94aa');
-    r(5, 8, 6, 3, '#38405a');
-    r(6, 9, 4, 1, Math.floor(t / 30) % 2 === 0 ? '#5cf05c' : '#2a8a2a'); // status light
-    // arms
-    r(1, 8, 2, 4, '#707888');
-    r(13, 8, 2, 4, '#707888');
-    // treads
-    r(4, 13, 8, 2, '#38405a');
-    r(3, 14, 10, 1, '#20263a');
-}
-
-// Rear view of the player, Pokemon battle style
-function drawPlayerBack(x, y, palette) {
-    const s = 5;
-    const r = (cx, cy, w, h, color) => {
-        ctx.fillStyle = color;
-        ctx.fillRect(x + cx * s, y + cy * s, w * s, h * s);
-    };
-    r(3, 0, 10, 3, palette.hat);
-    r(2, 2, 12, 4, palette.hat);
-    r(4, 6, 8, 2, '#f0c8a0');
-    r(2, 8, 12, 7, palette.shirt);
-    r(1, 9, 1, 4, '#f0c8a0');
-    r(14, 9, 1, 4, '#f0c8a0');
-    r(3, 15, 4, 3, palette.pants);
-    r(9, 15, 4, 3, palette.pants);
-}
-
-function drawHPBox(x, y, name, hp, maxHP, showNumbers) {
-    ctx.fillStyle = '#f8f8f0';
-    ctx.fillRect(x, y, 240, showNumbers ? 78 : 62);
-    ctx.strokeStyle = '#384060';
-    ctx.lineWidth = 4;
-    ctx.strokeRect(x, y, 240, showNumbers ? 78 : 62);
-    ctx.fillStyle = '#202030';
-    ctx.font = '13px "Press Start 2P", monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText(name, x + 14, y + 26);
-    // HP bar
-    ctx.fillStyle = '#384060';
-    ctx.fillRect(x + 14, y + 36, 212, 14);
-    const pct = Math.max(0, hp / maxHP);
-    ctx.fillStyle = pct > 0.5 ? '#5cb85c' : pct > 0.2 ? '#f0ad4e' : '#d9534f';
-    ctx.fillRect(x + 17, y + 39, 206 * pct, 8);
-    if (showNumbers) {
-        ctx.fillStyle = '#202030';
-        ctx.font = '11px "Press Start 2P", monospace';
-        ctx.textAlign = 'right';
-        ctx.fillText(`${hp}/${maxHP}`, x + 226, y + 68);
-    }
-}
-
-function renderBattle() {
-    const t = state.frame;
-    // backdrop
-    const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
-    grad.addColorStop(0, '#d8ecc0');
-    grad.addColorStop(1, '#f0f8e0');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // platforms
-    ctx.fillStyle = '#a8cc78';
-    ctx.beginPath();
-    ctx.ellipse(520, 240, 150, 36, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.ellipse(180, 420, 170, 40, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // combatants
-    if (battle.shake > 0) battle.shake--;
-    drawBot(490, 160, t, battle.shake);
-    drawPlayerBack(140, 320, player.palette);
-
-    // HP boxes: enemy top-left, player mid-right
-    drawHPBox(30, 30, 'WILD BOT', battle.enemyHP, battle.enemyMax, false);
-    drawHPBox(450, 300, 'DEV', state.hp, PLAYER_MAX_HP, true);
+    drawEffects(cam.x, cam.y);
 }
 
 // ---------- Rendering: cutscene ----------
@@ -1225,12 +1359,14 @@ function gameLoop() {
     try {
         state.frame++;
         if (state.running) {
-            if (mode === 'world') updatePlayer();
+            if (mode === 'world') {
+                updatePlayer();
+                if (!dialogue.open) BOTS.forEach(updateBot);
+            }
             if (mode === 'cutscene') updateCutscene();
             updateDialogue();
         }
-        if (mode === 'battle') renderBattle();
-        else if (mode === 'cutscene') renderCutscene();
+        if (mode === 'cutscene') renderCutscene();
         else render();
     } catch (err) {
         if (!loopErrorLogged) {

@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=3">
+    <link rel="stylesheet" href="styles.css?v=4">
 </head>
 <body>
     <div id="console-shell">
@@ -27,22 +27,14 @@
                     <span id="dialogue-arrow" class="hidden">&#9660;</span>
                 </div>
 
-                <!-- RPG battle menu (2x2, Pokemon style) -->
-                <div id="battle-menu" class="hidden">
-                    <div class="battle-option" id="bm-0">DEBUG</div>
-                    <div class="battle-option" id="bm-1">REFACTOR</div>
-                    <div class="battle-option" id="bm-2">COFFEE</div>
-                    <div class="battle-option" id="bm-3">RUN</div>
-                </div>
-
                 <!-- Start Screen -->
                 <div id="start-screen">
                     <h1>ARCADE<br>PORTFOLIO</h1>
                     <p class="subtitle">A Pokemon-style portfolio adventure</p>
                     <button id="start-btn" class="pixel-btn">PRESS START</button>
                     <div class="instructions">
-                        <p><span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span> MOVE &nbsp;&nbsp; <span class="key">E</span> INTERACT</p>
-                        <p class="fine-print">Collect the 5 NOTES lying on the ground.<br>Beware: wild BOTS lurk in the tall grass.<br>Turn your notes in at the INBOX basket!</p>
+                        <p><span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span> MOVE &nbsp; <span class="key">E</span> PUNCH / TALK &nbsp; <span class="key">X</span> HOLD TO BLOCK</p>
+                        <p class="fine-print">Collect the 5 NOTES lying on the ground.<br>Wild BOTS will charge at you — punch (A) or block (B)!<br>Turn your notes in at the INBOX basket.</p>
                     </div>
                 </div>
             </div>
@@ -67,9 +59,9 @@
             </div>
         </div>
 
-        <div id="controls-hint">WASD to move &middot; E to interact</div>
+        <div id="controls-hint">WASD to move &middot; E to punch / talk &middot; hold X to block</div>
     </div>
 
-    <script src="game.js?v=3"></script>
+    <script src="game.js?v=4"></script>
 </body>
 </html>
